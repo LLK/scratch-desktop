@@ -38,6 +38,17 @@ const getPlatformFlag = function () {
 };
 
 /**
+ * Tests if the target name is of the given target type.
+ * @param {string} targetName - the target name to test, like 'nsis' or 'dmg:arm64'
+ * @param {string} targetType - the target type to look for, such as 'nsis' or 'dmg'
+ * @returns {boolean} - true if `targetName` is exactly `targetType` or starts with `targetType` followed by ':'.
+ */
+const isTargetOfType = function (targetName, targetType) {
+    return targetName === targetType ||
+        targetName.indexOf(`${targetType}:`) === 0;
+};
+
+/**
  * Run `electron-builder` once to build one or more target(s).
  * @param {object} wrapperConfig - overall configuration object for the wrapper script.
  * @param {object} target - the target to build in this call.
@@ -46,10 +57,10 @@ const getPlatformFlag = function () {
  */
 const runBuilder = function (wrapperConfig, target) {
     // the AppX build fails if CSC_* or WIN_CSC_* variables are set
-    const shouldStripCSC = (target.name.indexOf('appx') === 0) || (!wrapperConfig.doSign);
+    const shouldStripCSC = isTargetOfType(target.name, 'appx') || (!wrapperConfig.doSign);
     const childEnvironment = shouldStripCSC ? stripCSC(process.env) : process.env;
     if (wrapperConfig.doSign &&
-        (target.name.indexOf('nsis') === 0) &&
+        isTargetOfType(target.name, 'nsis') &&
         !(childEnvironment.CSC_LINK || childEnvironment.WIN_CSC_LINK)) {
         throw new Error(`Signing NSIS build requires CSC_LINK or WIN_CSC_LINK`);
     }
@@ -57,7 +68,7 @@ const runBuilder = function (wrapperConfig, target) {
     let allArgs = [platformFlag, target.name];
     if (target.platform === 'darwin') {
         allArgs.push(`--c.mac.type=${wrapperConfig.mode === 'dist' ? 'distribution' : 'development'}`);
-        if (target.name === 'mas-dev') {
+        if (isTargetOfType(target.name, 'mas-dev')) {
             allArgs.push('--c.mac.provisioningProfile=mas-dev.provisionprofile');
         }
         if (wrapperConfig.doSign) {
@@ -89,6 +100,24 @@ const runBuilder = function (wrapperConfig, target) {
 };
 
 /**
+ * Build a platform+target object from the parameters. This object represents one call to electron-builder and will
+ * build one platform+target, potentially for multiple architectures.
+ * @param {Array.<object>} targets - the list to which new target objects will be added
+ * @property {string} name - the 'target' combined with each of the items from the 'architectures' argument
+ * @property {string} platform - the 'platform' argument
+ * @param {string} newPlatform - the electron-builder platform name ('win32', 'darwin', etc.)
+ * @param {string} newTarget - the electron-builder target name ('mas', 'nsis', etc.)
+ * @param {Array.<string>} newArchitectures - the electron-builder architecture names ('x64', 'ia32', etc.)
+ */
+const addPlatformTarget = function (targets, newPlatform, newTarget, newArchitectures = null) {
+    const newEntry = {
+        platform: newPlatform,
+        name: newArchitectures.map(arch => `${newTarget}:${arch}`).join(' ') // 'dmg:x64 dmg:arm64'
+    };
+    targets.push(newEntry);
+};
+
+/**
  * @param {object} wrapperConfig - overall configuration object for the wrapper script.
  * @returns {Array.<object>} - the default list of targets on this platform. Each item in the array represents one
  * call to `runBuilder` for exactly one build target. In theory electron-builder can build two or more targets at the
@@ -96,34 +125,12 @@ const runBuilder = function (wrapperConfig, target) {
  */
 const calculateTargets = function (wrapperConfig) {
     const masDevProfile = 'mas-dev.provisionprofile';
-    const availableTargets = {
-        macAppStore: {
-            name: 'mas',
-            platform: 'darwin'
-        },
-        macAppStoreDev: {
-            name: 'mas-dev',
-            platform: 'darwin'
-        },
-        macDirectDownload: {
-            name: 'dmg',
-            platform: 'darwin'
-        },
-        microsoftStore: {
-            name: 'appx:ia32 appx:x64',
-            platform: 'win32'
-        },
-        windowsDirectDownload: {
-            name: 'nsis:ia32',
-            platform: 'win32'
-        }
-    };
     const targets = [];
     switch (process.platform) {
     case 'win32':
         // Run in two passes so we can skip signing the AppX for distribution through the MS Store.
-        targets.push(availableTargets.microsoftStore);
-        targets.push(availableTargets.windowsDirectDownload);
+        addPlatformTarget(targets, 'win32', 'appx', ['x64', 'ia32', 'arm64']);
+        addPlatformTarget(targets, 'win32', 'nsis', ['ia32']);
         break;
     case 'darwin':
         // Running 'dmg' and 'mas' in the same pass causes electron-builder to skip signing the non-MAS app copy.
@@ -132,17 +139,17 @@ const calculateTargets = function (wrapperConfig) {
         // Running the 'mas' build first means that its output is available while we wait for 'dmg' notarization.
         // Add macAppStoreDev here to test a MAS-like build locally. You'll need a Mac Developer provisioning profile.
         if (fs.existsSync(masDevProfile)) {
-            targets.push(availableTargets.macAppStoreDev);
+            addPlatformTarget(targets, 'darwin', 'mas-dev', ['x64', 'arm64', 'universal']);
         } else {
-            console.log(`skipping target "${availableTargets.macAppStoreDev.name}": ${masDevProfile} missing`);
+            console.log(`skipping 'mas-dev' targets: ${masDevProfile} missing`);
         }
         if (wrapperConfig.doSign) {
-            targets.push(availableTargets.macAppStore);
+            addPlatformTarget(targets, 'darwin', 'mas', ['x64', 'arm64', 'universal']);
         } else {
             // electron-builder doesn't seem to support this configuration even if mac.type is "development"
-            console.log(`skipping target "${availableTargets.macAppStore.name}" because code-signing is disabled`);
+            console.log(`skipping 'mas' targets: code-signing is disabled`);
         }
-        targets.push(availableTargets.macDirectDownload);
+        addPlatformTarget(targets, 'darwin', 'dmg', ['x64', 'arm64', 'universal']);
         break;
     default:
         throw new Error(`Could not determine targets for platform: ${process.platform}`);

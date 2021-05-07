@@ -111,13 +111,20 @@ jobs:
                 # See also: https://stackoverflow.com/a/22370486
                 command: |
                   NPM_APP_VERSION="`node -pe "require('./package.json').version"`"
-                  cd dist/mas-dev
-                  ditto -v -c -k --sequesterRsrc --keepParent --zlibCompressionLevel 9 \
-                    Scratch*.app ../../Artifacts/mas-dev-${NPM_APP_VERSION}.zip
+                  mkdir -p Artifacts/
+                  function zip_app () {
+                    pushd "$1"
+                    ditto -v -c -k --sequesterRsrc --keepParent --zlibCompressionLevel 9 \
+                      Scratch*.app "../../Artifacts/mas-dev-${NPM_APP_VERSION}.${2}.zip"
+                    popd
+                  }
+                  zip_app dist/mas-dev x64
+                  if [ -d dist/mas-dev-arm64 ]; then zip_app dist/mas-dev-arm64 arm64; fi
             - run:
                 name: Move PKG to artifacts directory
                 command: |
-                  mv -v dist/mas/Scratch*.pkg Artifacts/
+                  mkdir -p Artifacts/
+                  mv -v dist/mas*/Scratch*.pkg Artifacts/
       - store_artifacts:
           path: Artifacts/
   build_for_windows:
